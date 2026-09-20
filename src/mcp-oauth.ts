@@ -79,7 +79,7 @@ export class PersonalOAuth implements OAuthServerProvider {
     // no-referrer makes browser form POSTs send Origin: null, which our CSRF
     // check correctly rejects. Preserve same-origin form metadata only.
     res.setHeader('Referrer-Policy', 'same-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'");
     const permission = scope === 'whoop:read' ? 'Read your WHOOP recovery, sleep, and training data.' : 'Read and modify your Hevy workouts and routines.';
     res.type('html').send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Functional Strength</title><body><h1>Connect Functional Strength to ChatGPT</h1><p>${permission}</p><p>Return address: ${escape(params.redirectUri)}</p><p>Enter the AUTH_TOKEN from the whoop-mcp service in Railway. This is your private connection password, not your WHOOP password.</p><form method="post" action="/connect"><input type="hidden" name="flow" value="${id}"><label>Connection password <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">Authorize ChatGPT</button></form><p>Close this window to cancel.</p></body></html>`);
   }
