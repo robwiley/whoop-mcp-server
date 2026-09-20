@@ -369,6 +369,17 @@ async function main(): Promise<void> {
 				res.status(400).send('Invalid or expired authorization request. Request a new link.');
 				return;
 			}
+			if (typeof req.query.error === 'string') {
+				const reason = req.query.error.slice(0, 100);
+				const description = typeof req.query.error_description === 'string'
+					? req.query.error_description.slice(0, 600) : '';
+				res.status(400).type('text/plain').send(
+					'WHOOP authorization was not completed.\n\nError: ' + reason +
+					(description ? '\nDetails: ' + description : '') +
+					'\n\nShare this error text with your setup assistant. Do not share the full address.'
+				);
+				return;
+			}
 			if (typeof code !== 'string' || !code) {
 				res.status(400).send('Missing authorization code');
 				return;
