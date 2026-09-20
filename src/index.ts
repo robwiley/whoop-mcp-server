@@ -7,6 +7,9 @@ import express, { type Request, type Response } from 'express';
 import { WhoopClient } from './whoop-client.js';
 import { WhoopDatabase } from './database.js';
 import { WhoopSync } from './sync.js';
+import { PersonalOAuth, installOAuth } from './mcp-oauth.js';
+import { installHevyProxy } from './hevy-proxy.js';
+import { dirname, join } from 'node:path';
 
 interface ToolArguments {
 	days?: number;
@@ -346,13 +349,21 @@ async function main(): Promise<void> {
 		process.stderr.write('Whoop MCP server running on stdio\n');
 	} else {
 		const app = express();
+		app.set('trust proxy', 1);
 		app.use(express.json({ limit: '1mb' }));
 		app.use((_req, res, next) => {
 			res.setHeader('Cache-Control', 'no-store');
 			res.setHeader('Referrer-Policy', 'no-referrer');
 			next();
 		});
-		app.use('/mcp', (req, res, next) => {
+		if (process.env.MCP_PUBLIC_URL) {
+			const issuer = new URL(process.env.MCP_PUBLIC_URL);
+			const hevyEnabled = Boolean(process.env.HEVY_MCP_URL && process.env.HEVY_MCP_TOKEN);
+			const oauth = new PersonalOAuth(issuer, join(dirname(config.dbPath), 'mcp-oauth.db'), config.authToken, process.env.ENCRYPTION_SECRET ?? '', hevyEnabled);
+			installOAuth(app, oauth);
+			app.use('/mcp', oauth.guard(new URL('/mcp', issuer), config.authToken));
+			if (hevyEnabled) installHevyProxy(app, oauth, process.env.HEVY_MCP_URL!, process.env.HEVY_MCP_TOKEN!);
+		} else app.use('/mcp', (req, res, next) => {
 			const supplied = Buffer.from(req.headers.authorization ?? '');
 			const expected = Buffer.from('Bearer ' + config.authToken);
 			if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
