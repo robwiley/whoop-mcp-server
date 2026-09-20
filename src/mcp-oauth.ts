@@ -76,6 +76,9 @@ export class PersonalOAuth implements OAuthServerProvider {
     const id = random(), cookie = random();
     this.flows.set(id, {client, params, resource, cookie, expires: now() + 600});
     res.cookie('__Host-fitness-connect', cookie, {secure:true, httpOnly:true, sameSite:'lax', path:'/', maxAge:600000});
+    // no-referrer makes browser form POSTs send Origin: null, which our CSRF
+    // check correctly rejects. Preserve same-origin form metadata only.
+    res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('Content-Security-Policy', "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
     const permission = scope === 'whoop:read' ? 'Read your WHOOP recovery, sleep, and training data.' : 'Read and modify your Hevy workouts and routines.';
     res.type('html').send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Functional Strength</title><body><h1>Connect Functional Strength to ChatGPT</h1><p>${permission}</p><p>Return address: ${escape(params.redirectUri)}</p><p>Enter the AUTH_TOKEN from the whoop-mcp service in Railway. This is your private connection password, not your WHOOP password.</p><form method="post" action="/connect"><input type="hidden" name="flow" value="${id}"><label>Connection password <input type="password" name="password" required autocomplete="current-password"></label><button type="submit">Authorize ChatGPT</button></form><p>Close this window to cancel.</p></body></html>`);
@@ -88,9 +91,16 @@ export class PersonalOAuth implements OAuthServerProvider {
     const flow = this.flows.get(id);
     this.flows.delete(id);
     const cookie = req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('__Host-fitness-connect='))?.split('=')[1] ?? '';
-    if (!flow || flow.expires < now() || !equal(cookie, flow.cookie) || req.headers.origin !== this.issuer.origin ||
-      typeof req.body.password !== 'string' || !equal(req.body.password, this.password)) {
-      res.status(403).send('Connection not authorized. Start a new connection from ChatGPT.'); return;
+    const reject = (reason: string, message: string) => {
+      // Never log credentials, cookies, flow IDs, or request bodies.
+      console.warn('OAuth consent rejected:', reason);
+      res.status(403).type('text').send(message + ' Start a new connection from ChatGPT.');
+    };
+    if (!flow || flow.expires < now()) { reject('session_expired', 'This login session expired or was already used.'); return; }
+    if (!equal(cookie, flow.cookie)) { reject('cookie_mismatch', 'The login cookie is missing or belongs to another login window. Close other connection windows and retry.'); return; }
+    if (req.headers.origin !== this.issuer.origin) { reject('origin_mismatch', 'The browser did not send the expected login-page origin.'); return; }
+    if (typeof req.body.password !== 'string' || !equal(req.body.password, this.password)) {
+      reject('password_mismatch', 'The connection password did not match. Copy the exact AUTH_TOKEN value from Railway whoop-mcp, without quotes or added spaces.'); return;
     }
     const grant: Grant = {clientId:flow.client.client_id, resource:flow.resource, scopes:[this.resources.get(flow.resource)!], family:random(), redirectUri:flow.params.redirectUri, challenge:flow.params.codeChallenge};
     const code = this.save('code', grant, 300), redirect = new URL(flow.params.redirectUri);
