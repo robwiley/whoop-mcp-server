@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type {
 	WhoopTokens,
 	WhoopUser,
@@ -28,6 +29,8 @@ interface PaginationParams {
 
 export class WhoopClient {
 	private tokens: WhoopTokens | null = null;
+	private pendingStates = new Map<string, number>();
+	private refreshInFlight: Promise<void> | null = null;
 	private readonly clientId: string;
 	private readonly clientSecret: string;
 	private readonly redirectUri: string;
@@ -45,14 +48,25 @@ export class WhoopClient {
 	}
 
 	getAuthorizationUrl(scopes: string[]): string {
+		const now = Date.now();
+		for (const [key, expires] of this.pendingStates) if (expires <= now) this.pendingStates.delete(key);
+		if (this.pendingStates.size >= 20) this.pendingStates.delete(this.pendingStates.keys().next().value!);
+		const state = randomBytes(6).toString('base64url');
+		this.pendingStates.set(state, now + 30 * 60 * 1000);
 		const params = new URLSearchParams({
 			client_id: this.clientId,
 			redirect_uri: this.redirectUri,
 			response_type: 'code',
 			scope: scopes.join(' '),
-			state: crypto.randomUUID(),
+			state,
 		});
 		return `${WHOOP_AUTH_BASE}/auth?${params}`;
+	}
+
+	consumeAuthorizationState(state: string): boolean {
+		const expires = this.pendingStates.get(state);
+		this.pendingStates.delete(state);
+		return expires !== undefined && expires > Date.now();
 	}
 
 	async exchangeCodeForTokens(code: string): Promise<WhoopTokens> {
@@ -119,7 +133,10 @@ export class WhoopClient {
 		}
 
 		if (this.tokens.expires_at - Date.now() < 5 * 60 * 1000) {
-			await this.refreshTokens();
+			if (!this.refreshInFlight) {
+				this.refreshInFlight = this.refreshTokens().finally(() => { this.refreshInFlight = null; });
+			}
+			await this.refreshInFlight;
 		}
 
 		const url = new URL(`${WHOOP_API_BASE}${path}`);
