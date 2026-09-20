@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -19,8 +20,12 @@ const config = {
 	dbPath: process.env.DB_PATH ?? './whoop.db',
 	port: Number.parseInt(process.env.PORT ?? '3000', 10),
 	mode: process.env.MCP_MODE ?? 'http',
+	authToken: process.env.AUTH_TOKEN ?? '',
 };
 
+if (!config.clientId || !config.clientSecret || (config.mode !== 'stdio' && config.authToken.length < 32)) {
+	throw new Error('WHOOP credentials and a strong AUTH_TOKEN are required for HTTP mode');
+}
 const db = new WhoopDatabase(config.dbPath);
 const client = new WhoopClient({
 	clientId: config.clientId,
@@ -341,11 +346,30 @@ async function main(): Promise<void> {
 		process.stderr.write('Whoop MCP server running on stdio\n');
 	} else {
 		const app = express();
-		app.use(express.json());
+		app.use(express.json({ limit: '1mb' }));
+		app.use((_req, res, next) => {
+			res.setHeader('Cache-Control', 'no-store');
+			res.setHeader('Referrer-Policy', 'no-referrer');
+			next();
+		});
+		app.use('/mcp', (req, res, next) => {
+			const supplied = Buffer.from(req.headers.authorization ?? '');
+			const expected = Buffer.from('Bearer ' + config.authToken);
+			if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+				res.status(401).json({ error: 'Unauthorized' });
+				return;
+			}
+			next();
+		});
 
 		app.get('/callback', async (req: Request, res: Response) => {
-			const code = req.query.code as string | undefined;
-			if (!code) {
+			const code = req.query.code;
+			const state = req.query.state;
+			if (typeof state !== 'string' || !client.consumeAuthorizationState(state)) {
+				res.status(400).send('Invalid or expired authorization request. Request a new link.');
+				return;
+			}
+			if (typeof code !== 'string' || !code) {
 				res.status(400).send('Missing authorization code');
 				return;
 			}
@@ -361,7 +385,7 @@ async function main(): Promise<void> {
 		});
 
 		app.get('/health', (_req: Request, res: Response) => {
-			res.json({ status: 'ok', authenticated: Boolean(db.getTokens()) });
+			res.json({ status: 'ok' });
 		});
 
 		app.all('/mcp', async (req: Request, res: Response) => {
@@ -394,7 +418,7 @@ async function main(): Promise<void> {
 					await server.connect(transport);
 				}
 
-				await transport.handleRequest(req, res);
+				await transport.handleRequest(req, res, req.body);
 				return;
 			}
 
