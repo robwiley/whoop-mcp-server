@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
+import { WhoopDatabase } from '../dist/database.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const dir = mkdtempSync(join(tmpdir(), 'whoop-workouts-'));
+const path = join(dir, 'test.db');
+process.env.ENCRYPTION_SECRET = 'synthetic-test-key-only-0123456789';
+let transport;
+try {
+  // Seed the prior schema to exercise migration against an existing database.
+  const old = new Database(path);
+  old.exec(`CREATE TABLE workouts (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, sport_id INTEGER NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL, score_state TEXT NOT NULL, strain REAL, avg_hr INTEGER, max_hr INTEGER, kilojoule REAL, zone_zero_milli INTEGER, zone_one_milli INTEGER, zone_two_milli INTEGER, zone_three_milli INTEGER, zone_four_milli INTEGER, zone_five_milli INTEGER, synced_at TEXT DEFAULT CURRENT_TIMESTAMP);
+  INSERT INTO workouts (id,user_id,sport_id,start_time,end_time,score_state) VALUES ('existing',1,1,'2020-01-01','2020-01-02','PENDING_SCORE');`);
+  old.close();
+  let db = new WhoopDatabase(path);
+  const end = new Date(Date.now() - 60000).toISOString();
+  const start = new Date(Date.now() - 31 * 60000).toISOString();
+  const base = {id:'v2',user_id:1,start,end,timezone_offset:'-04:00',sport_name:'cycling',score_state:'SCORED'};
+  const score = {strain:8,average_heart_rate:125,max_heart_rate:155,kilojoule:400,percent_recorded:99,zone_durations:{zone_zero_milli:0,zone_one_milli:300000,zone_two_milli:1500000,zone_three_milli:0,zone_four_milli:0,zone_five_milli:0}};
+  db.upsertWorkouts([{...base,score},{...base,id:'pending',score_state:'PENDING_SCORE'},{...base,id:'missing-zones',score:{...score,zone_durations:undefined}}]);
+  db.upsertSleeps([{id:'sleep',user_id:1,start,end,nap:false,score_state:'PENDING_SCORE'}]);
+  let rows=db.getWorkoutsByDateRange('2000','2100');
+  assert.equal(rows.length,4);
+  const w=rows.find(x=>x.id==='v2');
+  assert.equal(w.avg_hr,125); assert.equal(w.sport_name,'cycling'); assert.equal(w.zone_two_milli,1500000); assert.equal(w.zone_zero_milli,0); assert.equal(w.percent_recorded,99);
+  assert.equal(rows.find(x=>x.id==='pending').avg_hr,null);
+  assert.equal(rows.find(x=>x.id==='missing-zones').zone_zero_milli,null);
+  db.upsertWorkouts([{...base,score}]); assert.equal(db.getWorkoutsByDateRange('2000','2100').length,4);
+  db.saveTokens({access_token:'synthetic',refresh_token:'synthetic',expires_at:Date.now()+3600000});
+  db.updateSyncState(start,end); db.close();
+  db=new WhoopDatabase(path); assert.equal(db.getWorkoutsByDateRange('2000','2100').length,4); db.close();
+  const client=new Client({name:'test',version:'1'},{capabilities:{}});
+  transport=new StdioClientTransport({command:process.execPath,args:['dist/index.js'],env:{...process.env,WHOOP_CLIENT_ID:'synthetic',WHOOP_CLIENT_SECRET:'synthetic',MCP_MODE:'stdio',DB_PATH:path}});
+  await client.connect(transport);
+  const result=await client.callTool({name:'get_strain_history',arguments:{days:7}});
+  const output=result.content.map(c=>c.text??'').join('\n');
+  assert.match(output,/Individual workouts/); assert.match(output,/cycling/); assert.match(output,/average HR: 125 bpm/); assert.match(output,/Z0: 0.00/); assert.match(output,/Z2: 25.00/); assert.match(output,/Z0: N\/A/); assert.doesNotMatch(output,/NaN/); assert.match(output,/No daily strain data/);
+  await client.close(); transport=undefined;
+  console.log('PASS: migration, v2 sync mapping, missing scores/zones, zero values, idempotency, and MCP workout output without daily cycles');
+} finally {if(transport) await transport.close(); rmSync(dir,{recursive:true,force:true});}
