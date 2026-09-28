@@ -301,7 +301,7 @@ function createMcpServer(): Server {
 						response += `- ID: ${w.id}; end: ${w.end_time}; offset: ${w.timezone_offset ?? 'unknown'}\n`;
 						response += `- Duration: ${((Date.parse(w.end_time) - Date.parse(w.start_time)) / 60000).toFixed(1)} min; status: ${w.score_state}\n`;
 						response += `- Workout strain: ${w.strain?.toFixed(1) ?? 'N/A'}; average HR: ${w.avg_hr ?? 'N/A'} bpm; max HR: ${w.max_hr ?? 'N/A'} bpm\n`;
-						response += `- HR coverage: ${w.percent_recorded ?? 'N/A'}%\n`;
+						response += `- WHOOP percent_recorded (raw API value; scale unverified): ${w.percent_recorded ?? 'N/A'}\n`;
 						const zones = [w.zone_zero_milli, w.zone_one_milli, w.zone_two_milli, w.zone_three_milli, w.zone_four_milli, w.zone_five_milli];
 						response += '- WHOOP zone minutes: ' + zones.map((ms, i) => `Z${i}: ${ms == null ? 'N/A' : (ms / 60000).toFixed(2)}`).join(', ') + '\n';
 					}
