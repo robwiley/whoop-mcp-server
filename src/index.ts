@@ -172,7 +172,11 @@ function createMcpServer(): Server {
 				try {
 					await sync.smartSync();
 				} catch {
-					// Continue with cached data
+					// Never hide a failed workout sync behind apparently fresh totals.
+					if (name === 'get_strain_history') {
+						return { content: [{ type: 'text', text: 'WHOOP sync failed; workout data may be incomplete. Run sync_data to diagnose.' }], isError: true };
+					}
+					// Other tools retain their existing cached-data behavior.
 				}
 			}
 
@@ -271,9 +275,9 @@ function createMcpServer(): Server {
 					const days = validateDays(typedArgs.days);
 					const trends = db.getStrainTrends(days);
 
-					if (trends.length === 0) {
-						return { content: [{ type: 'text', text: 'No strain data available for the requested period.' }] };
-					}
+					const end = new Date();
+					const start = new Date(end.getTime() - days * 86_400_000);
+					const workouts = db.getWorkoutsByDateRange(start.toISOString(), end.toISOString());
 
 					let response = `# Strain History (Last ${days} Days)\n\n`;
 					response += '| Date | Strain | Calories |\n|------|--------|----------|\n';
@@ -287,6 +291,20 @@ function createMcpServer(): Server {
 
 					response += `\n## Averages\n- **Daily Strain**: ${avgStrain.toFixed(1)}\n- **Daily Calories**: ${Math.round(avgCalories)} kcal\n`;
 
+					if (trends.length === 0) response = `# Strain History (Last ${days} Days)\n\nNo daily strain data available.\n`;
+					response += '\n## Individual workouts\n';
+					response += `Window: ${start.toISOString()} through ${end.toISOString()}. Times below are UTC; recorded offsets are included.\n`;
+					response += `Last successful sync (UTC): ${db.getSyncState().lastSyncAt ?? 'unknown'}.\n`;
+					if (workouts.length === 0) response += 'No workouts returned for this window. Missing records do not establish inactivity.\n';
+					for (const w of workouts) {
+						response += `\n### ${w.sport_name ?? `Sport ID ${w.sport_id}`} — ${w.start_time}\n`;
+						response += `- ID: ${w.id}; end: ${w.end_time}; offset: ${w.timezone_offset ?? 'unknown'}\n`;
+						response += `- Duration: ${((Date.parse(w.end_time) - Date.parse(w.start_time)) / 60000).toFixed(1)} min; status: ${w.score_state}\n`;
+						response += `- Workout strain: ${w.strain?.toFixed(1) ?? 'N/A'}; average HR: ${w.avg_hr ?? 'N/A'} bpm; max HR: ${w.max_hr ?? 'N/A'} bpm\n`;
+						response += `- HR coverage: ${w.percent_recorded ?? 'N/A'}%\n`;
+						const zones = [w.zone_zero_milli, w.zone_one_milli, w.zone_two_milli, w.zone_three_milli, w.zone_four_milli, w.zone_five_milli];
+						response += '- WHOOP zone minutes: ' + zones.map((ms, i) => `Z${i}: ${ms == null ? 'N/A' : (ms / 60000).toFixed(2)}`).join(', ') + '\n';
+					}
 					return { content: [{ type: 'text', text: response }] };
 				}
 
